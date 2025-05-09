@@ -1,8 +1,8 @@
 <?php
 class Modelo{
 
-  private $appointment;
-  private $db;
+  public $appointment;
+  public $db;
   public $codcit;
   public $dates;
   public $hour;

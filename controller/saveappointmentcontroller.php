@@ -83,7 +83,7 @@ try {
     $appointment->coddoc = $input['coddoc'];
     $appointment->codespe = $input['codespe'];
     $appointment->codpaci = $_SESSION['id'];
-    $appointment->estado = 'pendiente';
+    $appointment->estado = '0';
 
     // 7. Versión definitiva de inserción
     try {

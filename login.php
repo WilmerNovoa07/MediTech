@@ -25,10 +25,12 @@ if (isset($_POST['login'])) {
     try {
       // Consulta para verificar el usuario y obtener sus datos
       $stmt = $connect->prepare(
-        'SELECT id, nombre, usuario, email, clave, cargo FROM usuarios WHERE usuario = :usuario 
-         UNION 
-         SELECT codpaci, nombrep, apellidop, usuario, clave, cargo FROM customers WHERE usuario = :usuario'
-      );
+            'SELECT id, nombre, usuario, email, clave, cargo FROM usuarios WHERE usuario = :usuario 
+            UNION 
+            SELECT codpaci, CONCAT(nombrep, " ", apellidop) as nombre, usuario, "" as email, clave, cargo FROM customers WHERE usuario = :usuario
+            UNION
+            SELECT coddoc, CONCAT(nomdoc, " ", apedoc) as nombre, usuario, correo as email, clave, cargo FROM doctor WHERE usuario = :usuario'
+        );
 
       $stmt->execute([':usuario' => $usuario]);
       $data = $stmt->fetch(PDO::FETCH_ASSOC);
@@ -55,6 +57,8 @@ if (isset($_POST['login'])) {
             header('Location: view/admin/admin.php');
           } elseif ($_SESSION['cargo'] == 2) {
             header('Location: view/user/user.php');
+          } elseif ($_SESSION['cargo'] == 3) {
+          header('Location: view/doctor/doctorview.php'); // Cambiado a la vista de doctor
           }
 
           exit;

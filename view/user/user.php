@@ -26,9 +26,10 @@ $id = $_SESSION['id'];
 	<title>Citas médicas</title>
 	<meta content='width=device-width, initial-scale=1.0, shrink-to-fit=no' name='viewport' />
 	<link rel="icon" href="" type="image/x-icon" />
-
+	<!-- Coloca esto en el <head> de tu HTML -->
+	<script src="https://unpkg.com/compromise@14.8.0/builds/compromise.min.js"></script>
 	<!-- Fonts and icons -->
-	<script src="../../assets/js/plugin/webfont/webfont.min.js"></script>
+	
 	<script>
 		WebFont.load({
 			google: { "families": ["Lato:300,400,700,900"] },
@@ -307,8 +308,7 @@ $id = $_SESSION['id'];
 														<option value="<?php echo $d->seguro; ?>">
 															<?php echo $d->seguro; ?>
 														</option>
-														<option value="Si">Si</option>
-														<option value="No">No</option>
+														
 													</select>
 												</div>
 											</div>
@@ -320,7 +320,7 @@ $id = $_SESSION['id'];
 														<option value="<?php echo $d->sexo; ?>">
 															<?php echo $d->sexo; ?>
 														</option>
-														<option>Female</option>
+														<label>Female</label>
 													</select>
 												</div>
 											</div>
@@ -511,30 +511,46 @@ $id = $_SESSION['id'];
 </style>
 
 
-<!-- JavaScript del chatbot -->
+	<!-- JavaScript del chatbot -->
 <script>
-const pacienteId = <?php echo json_encode($id); ?>;
-let chatStep = 0; // Control de pasos en la conversación
-let appointmentData = {}; // Guardar los datos de la cita
-let specialties = []; // Almacenar las especialidades disponibles
-let doctors = []; // Almacenar los doctores disponibles
-let availableDates = []; // Almacenar las fechas disponibles
+const pacienteId = <?php echo isset($_SESSION['id']) ? json_encode($_SESSION['id']) : json_encode(null); ?>;
+let chatStep = 0;
+let appointmentData = {};
+let specialties = [];
+let doctors = [];
+let availableDates = [];
+let isCancelling = false;
+let userAppointments = [];
+let citasPendientes = [];
 
-document.getElementById('chatbot-send').addEventListener('click', async function () {
-    let userMessage = document.getElementById('chatbot-input').value;
-    if (userMessage.trim() !== '') {
-        addMessageToChat(userMessage, 'user');
-        document.getElementById('chatbot-input').value = '';
-        const botResponse = await generateBotResponse(userMessage); // Usa await aquí
-        addMessageToChat(botResponse, 'bot');
-    }
-});
-// Enviar mensaje al presionar Enter
+// Función para verificar si NLP está cargado
+function isNlpLoaded() {
+    return typeof window.nlp === 'function';
+}
+
+// Versión de emergencia si NLP no carga
+function basicNLPFallback(text) {
+    console.warn('Usando NLP básico de emergencia');
+    return {
+        dates: () => ({ out: () => [] }),
+        match: () => ({ out: () => [] }),
+        values: () => ({ toNumber: () => ({ out: () => [] }) }),
+        has: () => false
+    };
+}
+
+// Función para análisis de mensajes
+
+
+// El resto de tus funciones permanecen igual, excepto por:
+
+
 document.getElementById('chatbot-input').addEventListener('keypress', function(e) {
     if (e.key === 'Enter') {
-        document.getElementById('chatbot-send').click(); // Simula clic en el botón de enviar
+        document.getElementById('chatbot-send').click();
     }
 });
+
 function addMessageToChat(message, sender) {
     const messagesContainer = document.getElementById('chatbot-messages');
     const messageElement = document.createElement('div');
@@ -544,292 +560,624 @@ function addMessageToChat(message, sender) {
     messagesContainer.scrollTop = messagesContainer.scrollHeight;
 }
 
+// Función para análisis de mensajes
+
+function analyzeMessage(message) {
+    const nlp = isNlpLoaded() ? window.nlp : basicNLPFallback;
+    const doc = nlp(message.toLowerCase());
+    
+    // Extracción mejorada de fechas
+    let extractedDate = null;
+    const dateFormats = [
+        { regex: /(\d{4})-(\d{2})-(\d{2})/, format: 'YYYY-MM-DD' }, // 2025-05-09
+        { regex: /(\d{2}) de (\w+) de (\d{4})/, format: 'DD de MMM de YYYY' }, // 09 de mayo de 2025
+        { regex: /(\d{2})\/(\d{2})\/(\d{4})/, format: 'DD/MM/YYYY' } // 09/05/2025
+    ];
+    
+    for (const format of dateFormats) {
+        const match = message.match(format.regex);
+        if (match) {
+            if (format.format === 'YYYY-MM-DD') {
+                extractedDate = match[0];
+            } else if (format.format === 'DD de MMM de YYYY') {
+                const months = {
+                    'enero': '01', 'febrero': '02', 'marzo': '03', 'abril': '04',
+                    'mayo': '05', 'junio': '06', 'julio': '07', 'agosto': '08',
+                    'septiembre': '09', 'octubre': '10', 'noviembre': '11', 'diciembre': '12'
+                };
+                const day = match[1].padStart(2, '0');
+                const month = months[match[2].toLowerCase()];
+                const year = match[3];
+                extractedDate = `${year}-${month}-${day}`;
+            } else if (format.format === 'DD/MM/YYYY') {
+                const [day, month, year] = match[0].split('/');
+                extractedDate = `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`;
+            }
+            break;
+        }
+    }
+    
+    // Extracción mejorada de horas
+    let extractedTime = null;
+    const timeMatch = message.match(/(\d{1,2})(?::(\d{2}))?\s*(am|pm)?/i);
+    if (timeMatch) {
+        let hours = parseInt(timeMatch[1]);
+        const minutes = timeMatch[2] || '00';
+        const period = timeMatch[3] ? timeMatch[3].toLowerCase() : null;
+        
+        if (period === 'pm' && hours < 12) hours += 12;
+        if (period === 'am' && hours === 12) hours = 0;
+        
+        extractedTime = `${hours.toString().padStart(2, '0')}:${minutes.padStart(2, '0')}`;
+    }
+    
+    // Extracción de números
+    const numberMatch = message.match(/\d+/);
+    
+    return {
+        text: message,
+        dates: extractedDate,
+        times: extractedTime,
+        numbers: numberMatch ? parseInt(numberMatch[0]) : null,
+        intent: getBasicIntent(message.toLowerCase()),
+        originalDoc: doc
+    };
+}
+
+// Detección básica de intenciones
+function getBasicIntent(message) {
+    if (/(hola|buenos|buenas|saludos)/i.test(message)) return 'greeting';
+    if (/(adi[óo]s|chao|hasta luego)/i.test(message)) return 'farewell';
+    if (/(gracias|agradezco)/i.test(message)) return 'thanks';
+    if (/(agendar|solicitar|reservar|cita)/i.test(message)) return 'schedule';
+    if (/(cancelar|anular|eliminar|cita)/i.test(message)) return 'cancel';
+    if (/(s[ií]|confirmo|correcto|ok)/i.test(message)) return 'confirm';
+    if (/(no|negativo|cancelar)/i.test(message)) return 'deny';
+    if (/(ayuda|help|no entiendo)/i.test(message)) return 'help';
+    return 'unknown';
+}
+
+document.getElementById('chatbot-send').addEventListener('click', async function() {
+    let userMessage = document.getElementById('chatbot-input').value;
+    if (userMessage.trim() !== '') {
+        addMessageToChat(userMessage, 'user');
+        document.getElementById('chatbot-input').value = '';
+        
+        try {
+            const botResponse = await generateBotResponse(userMessage);
+            addMessageToChat(botResponse, 'bot');
+        } catch (error) {
+            console.error("Error en el chatbot:", error);
+            addMessageToChat("Disculpa, estoy teniendo dificultades. Por favor intenta de nuevo más tarde.", 'bot');
+        }
+    }
+});
+
+
 async function generateBotResponse(message) {
-    message = message.toLowerCase();
+    const analysis = analyzeMessage(message);
+    console.log("Análisis NLP:", analysis); // Para depuración
+    
+    const handleUnexpected = () => {
+        chatStep = 0;
+        isCancelling = false;
+        appointmentData = {};
+        userAppointments = [];
+        
+        const prompts = [
+            "Disculpa, no entendí. ¿Necesitas agendar o cancelar una cita?",
+            "Puedo ayudarte con agendar o cancelar citas. ¿Qué necesitas?",
+            "¿Te gustaría agendar una cita o cancelar una existente?"
+        ];
+        return prompts[Math.floor(Math.random() * prompts.length)];
+    };
+
+    // Manejar intenciones generales independientemente del paso
+    if (analysis.intent === 'greeting' && chatStep === 0) {
+        return '¡Hola! ¿En qué puedo ayudarte hoy? ¿Quieres agendar o cancelar una cita?';
+    }
+    
+    if (analysis.intent === 'thanks') {
+        return '¡De nada! ¿Hay algo más en lo que pueda ayudarte?';
+    }
+    
+    if (analysis.intent === 'farewell') {
+        return '¡Hasta luego! Que tengas un buen día.';
+    }
+    
+    if (analysis.intent === 'help') {
+        return getHelpResponse(chatStep);
+    }
 
     switch (chatStep) {
         case 0:
             chatStep++;
-            return '¡Hola! ¿Te gustaría agendar una cita? (responde con "si" o "no")';
-
-        case 1:
-            if (message === 'sí' || message === 'si') {
+            if (analysis.intent === 'schedule') {
                 chatStep++;
-                addMessageToChat('Perfecto, estoy obteniendo las especialidades disponibles. Por favor espera un momento...', 'bot');
+                addMessageToChat('Perfecto, estoy obteniendo las especialidades disponibles...', 'bot');
                 const specialtiesMessage = await fetchSpecialties();
                 return specialtiesMessage;
-            } else if (message === 'no') {
-                chatStep = 0;
-                return 'Está bien. Si necesitas algo más, estaré aquí para ayudarte.';
+            } else if (analysis.intent === 'cancel') {
+                isCancelling = true;
+                chatStep = 100;
+                return await startCancellationProcess();
+            }
+            return '¡Hola! ¿Te gustaría agendar o cancelar una cita? (responde "agendar" o "cancelar")';
+
+        case 1:
+            if (analysis.intent === 'schedule' || message.includes('agendar')) {
+                chatStep++;
+                addMessageToChat('Perfecto, estoy obteniendo las especialidades disponibles...', 'bot');
+                const specialtiesMessage = await fetchSpecialties();
+                return specialtiesMessage;
+            } else if (analysis.intent === 'cancel' || message.includes('cancelar')) {
+                isCancelling = true;
+                chatStep = 100;
+                return await startCancellationProcess();
             } else {
-                return 'Por favor, responde con "sí" o "no".';
+                return handleUnexpected();
             }
 
-			case 2:
-			let selectedSpecialty;
+        case 2:
+            let selectedSpecialty;
+            if (analysis.numbers) {
+                const index = analysis.numbers - 1;
+                if (index >= 0 && index < specialties.length) {
+                    selectedSpecialty = specialties[index];
+                }
+            } else {
+                const searchTerm = message.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+                selectedSpecialty = specialties.find(s => 
+                    s.nombrees.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").includes(searchTerm)
+                );
+            }
+
+            if (selectedSpecialty) {
+                appointmentData.codespe = selectedSpecialty.codespe;
+                const doctorsMessage = await fetchDoctorsBySpecialty(selectedSpecialty.codespe);
+                
+                if (doctors.length === 0) {
+                    chatStep = 2;
+                    return `⚠️ No hay doctores disponibles para ${selectedSpecialty.nombrees}.\n\n${await fetchSpecialties()}`;
+                }
+                
+                chatStep++;
+                return doctorsMessage;
+            } else {
+                const specialtiesList = specialties.map((s, index) => `${index + 1}. ${s.nombrees}`).join('\n');
+                return `Especialidad no válida. Opciones:\n${specialtiesList}\n(Escribe número o nombre)`;
+            }
+
+        case 3:
+            let selectedDoctor;
+            if (analysis.numbers) {
+                const index = analysis.numbers - 1;
+                if (index >= 0 && index < doctors.length) {
+                    selectedDoctor = doctors[index];
+                }
+            } else {
+                const searchName = message.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+                selectedDoctor = doctors.find(d => {
+                    const doctorName = `${d.nomdoc} ${d.apedoc}`.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+                    return doctorName.includes(searchName);
+                });
+            }
+
+            if (selectedDoctor) {
+                appointmentData.coddoc = selectedDoctor.coddoc;
+                appointmentData.doctor = `${selectedDoctor.nomdoc} ${selectedDoctor.apedoc}`;
+                chatStep++;
+                addMessageToChat(`Doctor: ${appointmentData.doctor}. Buscando fechas...`, 'bot');
+                availableDates = await fetchAvailableDates(selectedDoctor.coddoc);
+                return availableDates.length > 0 ? 
+                    `Fechas disponibles:\n${availableDates.join('\n')}\n(Puedes escribir la fecha como "15 de diciembre" o "2023-12-15")` :
+                    'No hay fechas disponibles. Elige otro doctor.';
+            } else {
+                const doctorsList = doctors.map((d, index) => `${index + 1}. ${d.nomdoc} ${d.apedoc}`).join('\n');
+                return `Doctor no válido. Opciones:\n${doctorsList}\n(Escribe número o nombre)`;
+            }
+
+        case 4:
+			let selectedDate = analysis.dates;
 			
-			// Verificar si el usuario ingresó un número
-			if (/^\d+$/.test(message)) {
-				const index = parseInt(message) - 1;
-				if (index >= 0 && index < specialties.length) {
-					selectedSpecialty = specialties[index];
+			// Si no se detectó fecha con NLP, intenta otros formatos
+			if (!selectedDate) {
+				// Formato "09 de mayo de 2025"
+				const spanishDateMatch = message.match(/(\d{2}) de (\w+) de (\d{4})/);
+				if (spanishDateMatch) {
+					const months = {
+						'enero': '01', 'febrero': '02', 'marzo': '03', 'abril': '04',
+						'mayo': '05', 'junio': '06', 'julio': '07', 'agosto': '08',
+						'septiembre': '09', 'octubre': '10', 'noviembre': '11', 'diciembre': '12'
+					};
+					const day = spanishDateMatch[1].padStart(2, '0');
+					const month = months[spanishDateMatch[2].toLowerCase()];
+					const year = spanishDateMatch[3];
+					selectedDate = `${year}-${month}-${day}`;
 				}
-			} else {
-				// Buscar por nombre (insensible a mayúsculas y acentos)
-				selectedSpecialty = specialties.find(s => 
-					s.nombrees.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "") === 
-					message.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "")
-				);
-			}
-
-			if (selectedSpecialty) {
-				appointmentData.codespe = selectedSpecialty.codespe;
-				chatStep++;
-				addMessageToChat(`Has seleccionado ${selectedSpecialty.nombrees}. Estoy obteniendo los doctores disponibles. Por favor espera un momento...`, 'bot');
-				const doctorsMessage = await fetchDoctorsBySpecialty(selectedSpecialty.codespe);
-				return doctorsMessage;
-			} else {
-				const specialtiesList = specialties.map((s, index) => `${index + 1}. ${s.nombrees}`).join('\n');
-				return `Lo siento, no encontré esa especialidad. Por favor selecciona una de estas opciones:\n${specialtiesList}\n\nPuedes escribir el número o el nombre.`;
-			}
-
-        
-
-			case 3:
-			let selectedDoctor;
-			
-			// Verificar si el usuario ingresó un número
-			if (/^\d+$/.test(message)) {
-				const index = parseInt(message) - 1;
-				if (index >= 0 && index < doctors.length) {
-					selectedDoctor = doctors[index];
+				// Si es un número, usa la selección por índice
+				else if (analysis.numbers && availableDates.length >= analysis.numbers) {
+					selectedDate = availableDates[analysis.numbers - 1];
 				}
-			} else {
-				// Buscar por nombre (insensible a mayúsculas y acentos)
-				const searchName = message.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
-				selectedDoctor = doctors.find(d => {
-					const doctorName = `${d.nomdoc} ${d.apedoc}`.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
-					return doctorName.includes(searchName);
-				});
 			}
 
-			if (selectedDoctor) {
-				appointmentData.coddoc = selectedDoctor.coddoc;
-				appointmentData.doctor = `${selectedDoctor.nomdoc} ${selectedDoctor.apedoc}`;
-				chatStep++;
-				addMessageToChat(`Has seleccionado al doctor ${selectedDoctor.nomdoc} ${selectedDoctor.apedoc}. Estoy obteniendo las fechas disponibles. Por favor espera un momento...`, 'bot');
-				availableDates = await fetchAvailableDates(selectedDoctor.coddoc);
-				if (availableDates.length > 0) {
-					return `Estas son las fechas disponibles:\n${availableDates.join('\n')}\n\nPor favor escribe la fecha que prefieres (ejemplo: 2023-12-15).`;
-				} else {
-					return 'Lo siento, no hay fechas disponibles para el doctor seleccionado. Por favor selecciona otro doctor.';
-				}
-			} else {
-				const doctorsList = doctors.map((d, index) => `${index + 1}. ${d.nomdoc} ${d.apedoc}`).join('\n');
-				return `Lo siento, no encontré ese doctor. Por favor selecciona uno de estos:\n${doctorsList}\n\nPuedes escribir el número o el nombre.`;
-			}
-
-			case 4:
-			// Normalizar la fecha ingresada
-			const datePattern = /(\d{2})[\/\-](\d{2})[\/\-](\d{4})|(\d{4})[\/\-](\d{2})[\/\-](\d{2})/;
-			const match = message.match(datePattern);
-			let selectedDate;
-			
-			if (match) {
-				// Convertir a formato YYYY-MM-DD
-				if (match[4]) { // Formato YYYY-MM-DD o similar
-					selectedDate = `${match[4]}-${match[5]}-${match[6]}`;
-				} else { // Formato DD-MM-YYYY o similar
-					selectedDate = `${match[3]}-${match[2]}-${match[1]}`;
-				}
-			} else {
-				selectedDate = message; // Intentar con el formato original
-			}
-
-			if (availableDates.includes(selectedDate)) {
+			if (selectedDate && availableDates.includes(selectedDate)) {
 				appointmentData.date = selectedDate;
 				chatStep++;
-				return `Has seleccionado la fecha ${appointmentData.date}. ¿Qué horario prefieres? (Formato: HH:MM)`;
+				return `Fecha: ${selectedDate}. ¿Qué horario prefieres? (Ejemplos: "3 pm", "15:30", "4")`;
 			} else {
-				return `Lo siento, esa fecha no está disponible. Por favor selecciona una de estas:\n${availableDates.join('\n')}`;
+				return `Fecha no válida o no disponible. Por favor selecciona una de estas opciones:\n${availableDates.map((d, i) => `${i+1}. ${d}`).join('\n')}\nPuedes escribir el número o la fecha completa.`;
 			}
 
-        case 5:
-            appointmentData.time = message;
-            chatStep++;
-            const available = await checkAvailability(appointmentData.coddoc, appointmentData.date, appointmentData.time); // Usa await aquí
-            if (available) {
-                return `Has seleccionado las ${appointmentData.time}. Tu cita será el ${appointmentData.date} a las ${appointmentData.time} con el doctor ${appointmentData.doctor}. ¿Es correcto? (responde con "sí" o "no")`;
+		case 5:
+			let selectedTime = analysis.times;
+			
+			// Si no se detectó hora con NLP, intenta interpretar formatos simples
+			if (!selectedTime) {
+				// Formato "4pm" o "4 pm"
+				const periodMatch = message.match(/(\d{1,2})\s*(am|pm)/i);
+				if (periodMatch) {
+					let hours = parseInt(periodMatch[1]);
+					const period = periodMatch[2].toLowerCase();
+					if (period === 'pm' && hours < 12) hours += 12;
+					if (period === 'am' && hours === 12) hours = 0;
+					selectedTime = `${hours.toString().padStart(2, '0')}:00`;
+				}
+				// Solo número (ej: "4")
+				else if (analysis.numbers) {
+					selectedTime = `${analysis.numbers.toString().padStart(2, '0')}:00`;
+				}
+			}
+
+			if (selectedTime) {
+				appointmentData.time = selectedTime;
+				chatStep++;
+				const available = await checkAvailability(appointmentData.coddoc, appointmentData.date, appointmentData.time);
+				if (available) {
+					return `Confirmación:\nFecha: ${appointmentData.date}\nHora: ${appointmentData.time}\nDoctor: ${appointmentData.doctor}\n¿Es correcto? (sí/no)`;
+				} else {
+					chatStep--; // Permite seleccionar otro horario
+					return `El horario ${selectedTime} no está disponible. Por favor elige otro horario.`;
+				}
+			} else {
+				return 'Por favor ingresa un horario válido. Ejemplos: "9:30", "2 pm" o simplemente "3" para las 3:00 pm.';
+			}
+        case 6:
+            if (analysis.intent === 'confirm') {
+                try {
+                    const result = await saveAppointment(appointmentData);
+                    chatStep = 0;
+                    return `✅ Cita agendada! ${result.data.date} ${result.data.time}\n¿Necesitas algo más?`;
+                } catch (error) {
+                    chatStep = 0;
+                    return '❌ Error al agendar. ¿Reintentar? (sí/no)';
+                }
+            }
+            chatStep = 0;
+            return 'Agendamiento cancelado. ¿Necesitas algo más?';
+
+        case 100:
+            try {
+                citasPendientes = await fetchUserAppointments();
+                
+                if (citasPendientes.length === 0) {
+                    isCancelling = false;
+                    chatStep = 0;
+                    return 'No tienes citas pendientes para cancelar.';
+                }
+                
+                chatStep++;
+                return `Tus citas activas:\n${formatAppointments(citasPendientes)}\nIngresa el número de la cita a cancelar (1-${citasPendientes.length}):`;
+            } catch (error) {
+                console.error('Error al obtener citas:', error);
+                isCancelling = false;
+                chatStep = 0;
+                return 'Ocurrió un error al obtener tus citas. Por favor intenta nuevamente.';
+            }
+
+        case 101:
+            try {
+                const selectedIndex = analysis.numbers ? analysis.numbers - 1 : parseInt(message) - 1;
+                
+                if (isNaN(selectedIndex) || selectedIndex < 0 || selectedIndex >= citasPendientes.length) {
+                    return `Número inválido. Por favor ingresa un número entre 1 y ${citasPendientes.length}:`;
+                }
+                
+                appointmentData.citaSeleccionada = citasPendientes[selectedIndex];
+                chatStep++;
+                return `¿Confirmas cancelar la cita del ${appointmentData.citaSeleccionada.fecha} ${appointmentData.citaSeleccionada.hora} con ${appointmentData.citaSeleccionada.doctor}? (sí/no)`;
+            } catch (error) {
+                console.error('Error al procesar selección:', error);
+                return 'Ocurrió un error al procesar tu selección. Por favor intenta nuevamente.';
+            }
+
+        case 102:
+            if (analysis.intent === 'confirm') {
+                addMessageToChat('Eliminando cita permanentemente...', 'bot');
+                try {
+                    const resultado = await cancelAppointment(appointmentData.citaSeleccionada.codcit);
+                    
+                    if (resultado.success) {
+                        citasPendientes = await fetchUserAppointments();
+                        chatStep = 0;
+                        isCancelling = false;
+                        return '✅ Cita eliminada permanentemente. ¿Necesitas algo más?';
+                    } else {
+                        throw new Error(resultado.message || 'Error al eliminar');
+                    }
+                } catch (error) {
+                    console.error('Error al eliminar:', error);
+                    return `❌ ${error.message}\n\n¿Quieres intentar con otra cita? (sí/no)`;
+                }
             } else {
-                chatStep--; // Volver al paso anterior
-                return 'Lo siento, ese horario ya no está disponible. Por favor selecciona otro horario.';
+                chatStep = 0;
+                isCancelling = false;
+                return 'Operación cancelada. ¿Necesitas algo más?';
             }
 
-			case 6: // Confirmación de cita
-    if (message === 'sí' || message === 'si') {
-        try {
-            const result = await saveAppointment(appointmentData);
-            
-            // Éxito
-            return `✅ Cita agendada para el ${result.data.date} a las ${result.data.time}. ¿Necesitas algo más?`;
-            
-        } catch (error) {
-            // Manejar específicamente conflictos de horario
-            if (error.message.includes('horario seleccionado ya está ocupado')) {
-                chatStep = 4; // Volver al paso de selección de hora
-                return `⚠️ ${error.message}\n\nEstas son las fechas disponibles:\n${availableDates.join('\n')}\n\nPor favor elige otra hora:`;
-            }
-            
-            chatStep = 0; // Reiniciar flujo
-            return 'Hubo un error. ¿Deseas intentar agendar otra cita?';
-        }
+        default:
+            return handleUnexpected();
     }
-    break;
+}
+
+
+// Funciones auxiliares
+// Función de ayuda para mensajes contextuales
+function getHelpResponse(currentStep) {
+    const helpMessages = {
+        0: "Puedo ayudarte a agendar o cancelar citas médicas. Solo dime 'agendar' para programar una nueva cita o 'cancelar' para eliminar una existente.",
+        1: "Por favor indica si quieres 'agendar' una nueva cita o 'cancelar' una existente.",
+        2: "Debes seleccionar una especialidad médica. Puedes escribir el número o el nombre de la especialidad que necesitas.",
+        3: "Ahora elige un doctor. Escribe el número o nombre del profesional que prefieras.",
+        4: "Selecciona una fecha disponible para tu cita. Puedes escribirla en formato '15 de marzo' o '2023-03-15'.",
+        5: "Indica la hora para tu cita. Puedes usar formato 24h (14:30) o 12h (2:30 pm).",
+        6: "Confirma si los datos de tu cita son correctos respondiendo 'sí' o 'no'.",
+        100: "Estás en el proceso de cancelación. Primero necesito listar tus citas activas.",
+        101: "Por favor ingresa el número de la cita que deseas cancelar.",
+        102: "Confirma si deseas cancelar la cita seleccionada respondiendo 'sí' o 'no'."
+    };
     
-    }
+    return helpMessages[currentStep] || "Estoy aquí para ayudarte a agendar o cancelar citas médicas. ¿En qué paso necesitas ayuda?";
 }
 
-async function fetchSpecialties() {
-    try {
-        const response = await fetch('/Meditech/controller/getspecialtiescontroller.php');
-        specialties = await response.json();
-        // Formatear el mensaje con números
-        const specialtiesList = specialties.map((s, index) => `${index + 1}. ${s.nombrees}`).join('\n');
-        return `Estas son las especialidades disponibles:\n${specialtiesList}\n\nPuedes escribir el número o el nombre de la especialidad.`;
-    } catch (error) {
-        console.error('Error al obtener las especialidades:', error);
-        return 'Lo siento, hubo un error al obtener las especialidades. Por favor intenta de nuevo.';
+
+async function startCancellationProcess() {
+    userAppointments = await fetchUserAppointments();
+    if (userAppointments.length === 0) {
+        isCancelling = false;
+        chatStep = 0;
+        return 'No tienes citas activas.';
     }
+    return `Tus citas:\n${formatAppointments(userAppointments)}\nIngresa el número a cancelar:`;
 }
 
-async function fetchDoctorsBySpecialty(codespe) {
+async function fetchUserAppointments() {
     try {
-        const response = await fetch(`/Meditech/controller/getdoctorsbyspecialtycontroller.php?codespe=${codespe}`);
-        doctors = await response.json();
-        // Formatear el mensaje con números
-        const doctorsList = doctors.map((d, index) => `${index + 1}. ${d.nomdoc} ${d.apedoc}`).join('\n');
-        return `Estos son los doctores disponibles:\n${doctorsList}\n\nPuedes escribir el número o el nombre del doctor.`;
-    } catch (error) {
-        console.error('Error al obtener los doctores:', error);
-        return 'Lo siento, hubo un error al obtener los doctores. Por favor intenta de nuevo.';
-    }
-}
-
-async function fetchAvailableDates(coddoc) {
-    try {
-        const response = await fetch(`/Meditech/controller/getavailabledatescontroller.php?coddoc=${coddoc}`);
-        if (!response.ok) throw new Error('Error en la respuesta del servidor');
-        
-        const data = await response.json();
-        
-        if (!Array.isArray(data)) {
-            console.error('Respuesta inesperada:', data);
-            throw new Error('Formato de datos incorrecto');
-        }
-        
-        return data;
-    } catch (error) {
-        console.error('Error al obtener fechas:', error);
-        // Mostrar mensaje útil al usuario
-        addMessageToChat('Ocurrió un error al consultar disponibilidad. Por favor intenta nuevamente.', 'bot');
-        return [];
-    }
-}
-
-async function checkAvailability(coddoc, fecha, hora) {
-    try {
-        const response = await fetch(`/Meditech/controller/checkavailabilitycontroller.php?coddoc=${coddoc}&fecha=${fecha}&hora=${hora}`);
-        const data = await response.json();
-        return data.available;
-    } catch (error) {
-        console.error('Error al verificar la disponibilidad:', error);
-        return false;
-    }
-}
-
-async function updateAvailability(coddoc, fecha, hora) {
-    try {
-        const response = await fetch('/Meditech/controller/updateavailabilitycontroller.php', {
+        const response = await fetch('/Meditech/controller/getuserappointments.php', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json'
             },
-            body: JSON.stringify({ coddoc, fecha, hora })
+            body: JSON.stringify({ pacienteId: pacienteId })
         });
+
+        if (!response.ok) {
+            throw new Error(`Error HTTP: ${response.status}`);
+        }
+
+        const data = await response.json();
         
-        return await response.json();
+        if (!data.success) {
+            throw new Error(data.error || 'Error al obtener citas');
+        }
+
+        // Procesar datos para consistencia
+        return data.data.map(cita => ({
+            codcit: cita.id || cita.codcit,
+            fecha: cita.fecha || cita.dates,
+            hora: cita.hora || cita.hour,
+            doctor: cita.doctor || (cita.nomdoc ? `${cita.nomdoc} ${cita.apedoc}` : undefined),
+            nombrees: cita.especialidad || cita.nombrees,
+            estado: cita.estado
+        }));
+
     } catch (error) {
-        console.error('Error en updateAvailability:', error);
-        return { success: false };
+        console.error('Error en fetchUserAppointments:', error);
+        throw error; // Re-lanzar para manejar en el flujo principal
     }
 }
 
-function obtenerIdPaciente() {
-    // Opción 1: Desde PHP (la mejor)
-    const pacienteId = <?php echo json_encode($_SESSION['id'] ?? null); ?>;
-    if (pacienteId) return pacienteId;
-    
-    // Opción 2: Desde localStorage (como respaldo)
-    return localStorage.getItem('pacienteId') || prompt('Por favor ingrese su ID:');
+function formatAppointments(appointments) {
+    if (!appointments || appointments.length === 0) {
+        return "No se encontraron citas.";
+    }
+
+    return appointments.map((appt, index) => {
+        // Asegurar que todos los campos existan
+        const fecha = appt.fecha || appt.dates || '--/--/----';
+        const hora = appt.hora || appt.hour || '--:--';
+        const doctor = appt.doctor || 
+                      (appt.nomdoc && appt.apedoc ? `${appt.nomdoc} ${appt.apedoc}` : 'Doctor no disponible');
+        const especialidad = appt.especialidad || appt.nombrees || 'Especialidad no disponible';
+
+        return `${index + 1}. ${fecha} ${hora} - ${doctor} (${especialidad})`;
+    }).join('\n');
 }
 
-async function saveAppointment(appointmentData) {
+function validateSelectedAppointment(input) {
+    const index = parseInt(input) - 1;
+    return userAppointments[index];
+}
+
+async function cancelAppointment(codcit) {
     try {
-        console.log('Enviando:', JSON.stringify(appointmentData, null, 2));
-        
-        const response = await fetch('/Meditech/controller/saveappointmentcontroller.php', {
+        const response = await fetch('/Meditech/controller/cancelappointment.php', {
             method: 'POST',
             headers: {
-                'Content-Type': 'application/json',
-                'Accept': 'application/json'
+                'Content-Type': 'application/json'
             },
-            body: JSON.stringify(appointmentData)
+            body: JSON.stringify({ codcit })
         });
 
-        // Manejar respuesta no JSON
-        const textResponse = await response.text();
-        let result;
+        const result = await response.json();
         
-        try {
-            result = JSON.parse(textResponse);
-        } catch {
-            throw new Error(`Respuesta inválida: ${textResponse.substring(0, 100)}...`);
-        }
-
-        if (!response.ok) {
-            // Manejar específicamente conflictos de horario
-            if (response.status === 409 && result.available_times) {
-                const horarios = result.available_times.map(t => t.hora_inicio).join(', ');
-                throw new Error(`El horario seleccionado no está disponible. Horarios disponibles: ${horarios}`);
-            }
-            throw new Error(result.message || 'Error en el servidor');
-        }
-
-        return result;
-
-    } catch (error) {
-        console.error('Error detallado:', error);
-        
-        // Mensaje amigable al usuario
-        let userMessage = error.message;
-        if (error.message.includes('Duplicate entry')) {
-            userMessage = 'El horario seleccionado ya está ocupado. Por favor elige otra hora.';
-        }
-        
-        addMessageToChat(`❌ ${userMessage}`, 'bot');
-        
-        // Si hay horarios alternativos, sugerirlos
-        if (error.message.includes('Horarios disponibles')) {
-            addMessageToChat('¿Te gustaría agendar en alguno de estos horarios disponibles?', 'bot');
+        if (result.success) {
+            // Actualizar la lista local eliminando la cita
+            citasPendientes = citasPendientes.filter(cita => cita.codcit !== codcit);
+            return result;
         } else {
-            addMessageToChat('Por favor intenta con otra fecha u hora.', 'bot');
+            throw new Error(result.message || 'Error al eliminar la cita');
         }
-        
+    } catch (error) {
+        console.error('Error al eliminar cita:', error);
         throw error;
     }
 }
 
-</script>
+// Funciones existentes (fetchSpecialties, fetchDoctorsBySpecialty, etc.) se mantienen igual
+
+
+	async function fetchSpecialties() {
+		try {
+			const response = await fetch('/Meditech/controller/getspecialtiescontroller.php');
+			specialties = await response.json();
+			// Formatear el mensaje con números
+			const specialtiesList = specialties.map((s, index) => `${index + 1}. ${s.nombrees}`).join('\n');
+			return `Estas son las especialidades disponibles:\n${specialtiesList}\n\nPuedes escribir el número o el nombre de la especialidad.`;
+		} catch (error) {
+			console.error('Error al obtener las especialidades:', error);
+			return 'Lo siento, hubo un error al obtener las especialidades. Por favor intenta de nuevo.';
+		}
+	}
+
+	async function fetchDoctorsBySpecialty(codespe) {
+		try {
+			const response = await fetch(`/Meditech/controller/getdoctorsbyspecialtycontroller.php?codespe=${codespe}`);
+			doctors = await response.json();
+			// Formatear el mensaje con números
+			const doctorsList = doctors.map((d, index) => `${index + 1}. ${d.nomdoc} ${d.apedoc}`).join('\n');
+			return `Estos son los doctores disponibles:\n${doctorsList}\n\nPuedes escribir el número o el nombre del doctor.`;
+		} catch (error) {
+			console.error('Error al obtener los doctores:', error);
+			return 'Lo siento, hubo un error al obtener los doctores. Por favor intenta de nuevo.';
+		}
+	}
+
+	async function fetchAvailableDates(coddoc) {
+		try {
+			const response = await fetch(`/Meditech/controller/getavailabledatescontroller.php?coddoc=${coddoc}`);
+			if (!response.ok) throw new Error('Error en la respuesta del servidor');
+			
+			const data = await response.json();
+			
+			if (!Array.isArray(data)) {
+				console.error('Respuesta inesperada:', data);
+				throw new Error('Formato de datos incorrecto');
+			}
+			
+			return data;
+		} catch (error) {
+			console.error('Error al obtener fechas:', error);
+			// Mostrar mensaje útil al usuario
+			addMessageToChat('Ocurrió un error al consultar disponibilidad. Por favor intenta nuevamente.', 'bot');
+			return [];
+		}
+	}
+
+	async function checkAvailability(coddoc, fecha, hora) {
+		try {
+			const response = await fetch(`/Meditech/controller/checkavailabilitycontroller.php?coddoc=${coddoc}&fecha=${fecha}&hora=${hora}`);
+			const data = await response.json();
+			return data.available;
+		} catch (error) {
+			console.error('Error al verificar la disponibilidad:', error);
+			return false;
+		}
+	}
+
+	async function updateAvailability(coddoc, fecha, hora) {
+		try {
+			const response = await fetch('/Meditech/controller/updateavailabilitycontroller.php', {
+				method: 'POST',
+				headers: {
+					'Content-Type': 'application/json'
+				},
+				body: JSON.stringify({ coddoc, fecha, hora })
+			});
+			
+			return await response.json();
+		} catch (error) {
+			console.error('Error en updateAvailability:', error);
+			return { success: false };
+		}
+	}
+
+	function obtenerIdPaciente() {
+		// Opción 1: Desde PHP (la mejor)
+		const pacienteId = <?php echo json_encode($_SESSION['id'] ?? null); ?>;
+		if (pacienteId) return pacienteId;
+		
+		// Opción 2: Desde localStorage (como respaldo)
+		return localStorage.getItem('pacienteId') || prompt('Por favor ingrese su ID:');
+	}
+
+	async function saveAppointment(appointmentData) {
+		try {
+			console.log('Enviando:', JSON.stringify(appointmentData, null, 2));
+			
+			const response = await fetch('/Meditech/controller/saveappointmentcontroller.php', {
+				method: 'POST',
+				headers: {
+					'Content-Type': 'application/json',
+					'Accept': 'application/json'
+				},
+				body: JSON.stringify(appointmentData)
+			});
+
+			// Manejar respuesta no JSON
+			const textResponse = await response.text();
+			let result;
+			
+			try {
+				result = JSON.parse(textResponse);
+			} catch {
+				throw new Error(`Respuesta inválida: ${textResponse.substring(0, 100)}...`);
+			}
+
+			if (!response.ok) {
+				// Manejar específicamente conflictos de horario
+				if (response.status === 409 && result.available_times) {
+					const horarios = result.available_times.map(t => t.hora_inicio).join(', ');
+					throw new Error(`El horario seleccionado no está disponible. Horarios disponibles: ${horarios}`);
+				}
+				throw new Error(result.message || 'Error en el servidor');
+			}
+
+			return result;
+
+		} catch (error) {
+			console.error('Error detallado:', error);
+			
+			// Mensaje amigable al usuario
+			let userMessage = error.message;
+			if (error.message.includes('Duplicate entry')) {
+				userMessage = 'El horario seleccionado ya está ocupado. Por favor elige otra hora.';
+			}
+			
+			addMessageToChat(`❌ ${userMessage}`, 'bot');
+			
+			// Si hay horarios alternativos, sugerirlos
+			if (error.message.includes('Horarios disponibles')) {
+				addMessageToChat('¿Te gustaría agendar en alguno de estos horarios disponibles?', 'bot');
+			} else {
+				addMessageToChat('Por favor intenta con otra fecha u hora.', 'bot');
+			}
+			
+			throw error;
+		}
+	}
+
+	</script>
 
 		<!-- End Custom template -->
 	</div>
@@ -864,7 +1212,7 @@ async function saveAppointment(appointmentData) {
 	<!-- jQuery Vector Maps -->
 	<script src="../../assets/js/plugin/jqvmap/jquery.vmap.min.js"></script>
 	<script src="../../assets/js/plugin/jqvmap/maps/jquery.vmap.world.js"></script>
-
+	<script src="https://unpkg.com/compromise@14.8.0/builds/compromise.min.js"></script>
 	<!-- Sweet Alert -->
 	<script src="../../assets/js/plugin/sweetalert/sweetalert.min.js"></script>
 

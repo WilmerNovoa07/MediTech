@@ -109,7 +109,7 @@ class appointmentcontroller{
             exit(); // Detener ejecución
         }
     
-    
+        
     
 
             //ELIMINAR
@@ -123,24 +123,87 @@ class appointmentcontroller{
 
     }
     public function actualizar() {
-        if ($_SERVER['REQUEST_METHOD'] == 'POST') {
-            $data = [
-                'codcit' => $_POST['codcit'],
-                'dates' => $_POST['dates'],
-                'hour' => $_POST['hour'],
-                'codpaci' => $_POST['codpaci'],
-                'coddoc' => $_POST['coddoc'],
-                'codespe' => $_POST['codespe'],
-                'estado' => $_POST['estado']
-            ];
+        if (session_status() === PHP_SESSION_NONE) {
+            session_start();
+        }
+    
+        if(isset($_POST['editar'])){
+            include "../config/conex.php";
             
-            $condicion = "codcit=".$_POST['codcit'];
-            $valores = "dates='".$_POST['dates']."', hour='".$_POST['hour']."', estado=".$_POST['estado'];
-            
-            if ($this->model->actualizar("appointment", $valores, $condicion)) {
-                header("Location: ".$_SERVER['HTTP_REFERER']."&success=1");
-            } else {
-                header("Location: ".$_SERVER['HTTP_REFERER']."&error=1");
+            try {
+                $codcit = $_POST['codcit'];
+                $coddoc = $_POST['coddoc'];
+                $dates = $_POST['dates'];
+                $hour = $_POST['hour'];
+                
+                // 1. Verificar disponibilidad (excluyendo la cita actual)
+                $sql_verificar = "SELECT COUNT(*) as total FROM appointment 
+                                WHERE coddoc = ? AND dates = ? AND hour = ? AND codcit != ?";
+                $stmt = $conex->prepare($sql_verificar);
+                $stmt->bind_param("ssss", $coddoc, $dates, $hour, $codcit);
+                $stmt->execute();
+                $result = $stmt->get_result()->fetch_assoc();
+    
+                if ($result['total'] > 0) {
+                    // Buscar horarios disponibles alternativos
+                    $sql_alternativos = "SELECT hour FROM appointment 
+                                       WHERE coddoc = ? AND dates = ? AND hour != ? AND codcit != ?
+                                       ORDER BY hour";
+                    $stmt = $conex->prepare($sql_alternativos);
+                    $stmt->bind_param("ssss", $coddoc, $dates, $hour, $codcit);
+                    $stmt->execute();
+                    $alternativos = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+                    
+                    // Preparar mensaje con horarios alternativos
+                    $horarios = array_column($alternativos, 'hour');
+                    $mensaje = "Ya existe otra cita para este doctor en la fecha y hora seleccionada.";
+                    
+                    if (!empty($horarios)) {
+                        $mensaje .= "\n\nHorarios disponibles ese día: " . implode(", ", $horarios);
+                    }
+    
+                    $_SESSION['swal'] = [
+                        'icon' => 'error',
+                        'title' => 'Horario no disponible',
+                        'text' => $mensaje,
+                        'footer' => 'Intente con otro horario'
+                    ];
+                    
+                    header("Location: ../view/appointment/mostrar.php");
+                    exit();
+                }
+    
+                // 2. Si está disponible, actualizar
+                $sql_actualizar = "UPDATE appointment SET 
+                                 dates = ?, 
+                                 hour = ? 
+                                 WHERE codcit = ?";
+                $stmt = $conex->prepare($sql_actualizar);
+                $stmt->bind_param("sss", $dates, $hour, $codcit);
+                
+                if ($stmt->execute()) {
+                    $_SESSION['swal'] = [
+                        'icon' => 'success',
+                        'title' => '¡Éxito!',
+                        'text' => 'Cita actualizada correctamente',
+                        'timer' => 2000,
+                        'showConfirmButton' => false
+                    ];
+                } else {
+                    throw new Exception("Error al actualizar la cita");
+                }
+    
+                header("Location: ../view/appointment/mostrar.php");
+                exit();
+    
+            } catch (mysqli_sql_exception $e) {
+                $_SESSION['swal'] = [
+                    'icon' => 'error',
+                    'title' => 'Error',
+                    'text' => 'Ocurrió un error al actualizar la cita: ' . $e->getMessage()
+                ];
+                header("Location: ../view/appointment/mostrar.php");
+                exit();
             }
         }
     }
